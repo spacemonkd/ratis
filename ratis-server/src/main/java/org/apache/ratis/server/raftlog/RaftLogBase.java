@@ -73,6 +73,11 @@ public abstract class RaftLogBase implements RaftLog {
   private final int maxBufferSize;
 
   private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+  /**
+   * Dedicated lock for commit/snapshot index updates so that commit progression
+   * does not contend on the raft-log read/write lock.
+   */
+  private final Object commitIndexLock = new Object();
   private final Runner runner = new Runner(this::getName);
   private final OpenCloseState state;
   private final LongSupplier getSnapshotIndexFromStateMachine;
@@ -120,25 +125,23 @@ public abstract class RaftLogBase implements RaftLog {
 
   @Override
   public boolean updateCommitIndex(long majorityIndex, long currentTerm, boolean isLeader) {
-    try(AutoCloseableLock writeLock = tryWriteLock(TimeDuration.ONE_SECOND)) {
-      final long oldCommittedIndex = getLastCommittedIndex();
-      final long newCommitIndex = Math.min(majorityIndex, getFlushIndex());
-      if (oldCommittedIndex < newCommitIndex) {
-        if (!isLeader) {
-          return commitIndex.updateIncreasingly(newCommitIndex, traceIndexChange);
-        }
-
-        // Only update last committed index for current term. See §5.4.2 in paper for details.
-        final TermIndex entry = getTermIndex(newCommitIndex);
-        if (entry != null && entry.getTerm() == currentTerm) {
-          return commitIndex.updateIncreasingly(newCommitIndex, traceIndexChange);
-        }
-      }
-    } catch (InterruptedException e) {
-      LOG.warn("{}: Interrupted to updateCommitIndex: majorityIndex={}, currentTerm={}, isLeader={}",
-          getName(), majorityIndex, currentTerm, isLeader, e);
+    final long oldCommittedIndex = getLastCommittedIndex();
+    final long newCommitIndex = Math.min(majorityIndex, getFlushIndex());
+    if (oldCommittedIndex >= newCommitIndex) {
+      return false;
     }
-    return false;
+
+    if (isLeader) {
+      // Only update last committed index for current term. See §5.4.2 in paper for details.
+      final TermIndex entry = getTermIndex(newCommitIndex);
+      if (entry == null || entry.getTerm() != currentTerm) {
+        return false;
+      }
+    }
+
+    synchronized (commitIndexLock) {
+      return commitIndex.updateToMax(newCommitIndex, traceIndexChange);
+    }
   }
 
   protected void updatePurgeIndex(Long purged) {
@@ -153,15 +156,9 @@ public abstract class RaftLogBase implements RaftLog {
 
   @Override
   public void updateSnapshotIndex(long newSnapshotIndex) {
-    try(AutoCloseableLock writeLock = writeLock()) {
-      final long oldSnapshotIndex = getSnapshotIndex();
-      if (oldSnapshotIndex < newSnapshotIndex) {
-        snapshotIndex.updateIncreasingly(newSnapshotIndex, infoIndexChange);
-      }
-      final long oldCommitIndex = getLastCommittedIndex();
-      if (oldCommitIndex < newSnapshotIndex) {
-        commitIndex.updateIncreasingly(newSnapshotIndex, traceIndexChange);
-      }
+    synchronized (commitIndexLock) {
+      snapshotIndex.updateToMax(newSnapshotIndex, infoIndexChange);
+      commitIndex.updateToMax(newSnapshotIndex, traceIndexChange);
     }
   }
 
@@ -268,8 +265,10 @@ public abstract class RaftLogBase implements RaftLog {
         consumer.accept(e);
       }
     });
-    Optional.ofNullable(lastMetadataEntry.get()).ifPresent(
-        e -> commitIndex.updateToMax(e.getMetadataEntry().getCommitIndex(), infoIndexChange));
+    synchronized (commitIndexLock) {
+      Optional.ofNullable(lastMetadataEntry.get()).ifPresent(
+          e -> commitIndex.updateToMax(e.getMetadataEntry().getCommitIndex(), infoIndexChange));
+    }
     state.open();
 
     final long startIndex = getStartIndex();
