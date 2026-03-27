@@ -464,6 +464,7 @@ public abstract class LeaderElectionTests<CLUSTER extends MiniRaftCluster>
         final List<RaftPeer> added = changes.getAddedPeers();
         final RaftClientReply reply = client.admin().setConfiguration(servers, added);
         assertTrue(reply.isSuccess());
+        RaftServerTestUtil.waitAndCheckNewConf(cluster, changes.getPeersInNewConf(), 0, null);
         Collection<RaftPeer> listener =
             leader.getRaftConf().getAllPeers(RaftProtos.RaftPeerRole.LISTENER);
         assertEquals(1, listener.size());
@@ -490,6 +491,7 @@ public abstract class LeaderElectionTests<CLUSTER extends MiniRaftCluster>
         newPeers.addAll(leader.getRaftConf().getAllPeers(RaftProtos.RaftPeerRole.FOLLOWER));
         RaftClientReply reply = client.admin().setConfiguration(newPeers, listener);
         assertTrue(reply.isSuccess());
+        RaftServerTestUtil.waitAndCheckNewConf(cluster, changes.getPeersInNewConf(), 0, null);
         assertEquals(4,
             leader.getRaftConf().getAllPeers(RaftProtos.RaftPeerRole.FOLLOWER).size());
         assertEquals(1,
@@ -512,6 +514,7 @@ public abstract class LeaderElectionTests<CLUSTER extends MiniRaftCluster>
         servers.add(leader.getPeer());
         RaftClientReply reply = client.admin().setConfiguration(servers);
         assertTrue(reply.isSuccess());
+        RaftServerTestUtil.waitAndCheckNewConf(cluster, servers, 0, null);
         assertEquals(0, leader.getRaftConf().getAllPeers(RaftProtos.RaftPeerRole.LISTENER).size());
       }
       cluster.shutdown();
@@ -534,6 +537,7 @@ public abstract class LeaderElectionTests<CLUSTER extends MiniRaftCluster>
         RaftClientReply reply = client.admin().setConfiguration(followers, listeners);
         assertTrue(reply.isSuccess());
         Collection<RaftPeer> peer = leader.getRaftConf().getAllPeers(RaftProtos.RaftPeerRole.LISTENER);
+        RaftServerTestUtil.waitAndCheckNewConf(cluster, followers, 0, null);
         assertEquals(1, peer.size());
         assertEquals(listeners.get(0).getId(), new ArrayList<>(peer).get(0).getId());
       }
@@ -554,10 +558,8 @@ public abstract class LeaderElectionTests<CLUSTER extends MiniRaftCluster>
         RaftClientReply reply = client.admin().setConfiguration(cluster.getPeers());
         assertTrue(reply.isSuccess());
         Collection<RaftPeer> peer = leader.getRaftConf().getAllPeers(RaftProtos.RaftPeerRole.LISTENER);
-        assertEquals(0, peer.size());
-
         RaftServerTestUtil.waitAndCheckNewConf(cluster, cluster.getPeers(), 0, null);
-
+        assertEquals(0, peer.size());
         listeners = cluster.getListeners()
                   .stream().map(RaftServer.Division::getPeer).collect(Collectors.toList());
         assertEquals(0, listeners.size());
