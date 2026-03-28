@@ -82,29 +82,48 @@ public final class RaftServerTestUtil {
   }
 
   public static void waitAndCheckNewConf(MiniRaftCluster cluster,
-      List<RaftPeer> peers, int numOfNewPeers, int numOfRemovedPeers, Collection<RaftPeerId> deadPeers)
+      List<RaftPeer> peers, int numOfNewPeers, int numOfRemovedPeers,
+      Collection<RaftPeerId> deadPeers) throws Exception {
+    waitAndCheckNewConf(cluster, peers, numOfNewPeers, numOfRemovedPeers, deadPeers, Collections.emptyList());
+  }
+
+  public static void waitAndCheckNewConf(MiniRaftCluster cluster,
+      List<RaftPeer> peers, int numOfNewPeers, int numOfRemovedPeers,
+      Collection<RaftPeerId> deadPeers, Collection<RaftPeer> newListeners)
       throws Exception {
     final TimeDuration sleepTime = cluster.getTimeoutMax().apply(n -> n * (numOfRemovedPeers + numOfNewPeers + 2));
-    JavaUtils.attempt(() -> waitAndCheckNewConf(cluster, peers, deadPeers),
+    JavaUtils.attempt(() -> waitAndCheckNewConf(cluster, peers, deadPeers, newListeners),
         10, sleepTime, "waitAndCheckNewConf", LOG);
   }
 
   public static void waitAndCheckNewConf(MiniRaftCluster cluster,
-      List<RaftPeer> peers, int numOfRemovedPeers, Collection<RaftPeerId> deadPeers)
+      List<RaftPeer> peers, int numOfRemovedPeers,
+      Collection<RaftPeerId> deadPeers)
+      throws Exception {
+    waitAndCheckNewConf(cluster, peers, numOfRemovedPeers, deadPeers, Collections.emptyList());
+  }
+
+  public static void waitAndCheckNewConf(MiniRaftCluster cluster,
+      List<RaftPeer> peers, int numOfRemovedPeers,
+      Collection<RaftPeerId> deadPeers, Collection<RaftPeer> newListeners)
       throws Exception {
     final TimeDuration sleepTime = cluster.getTimeoutMax().apply(n -> n * (numOfRemovedPeers + 2));
-    JavaUtils.attempt(() -> waitAndCheckNewConf(cluster, peers, deadPeers),
+    JavaUtils.attempt(() -> waitAndCheckNewConf(cluster, peers, deadPeers, newListeners),
         10, sleepTime, "waitAndCheckNewConf", LOG);
   }
+
   private static void waitAndCheckNewConf(MiniRaftCluster cluster,
-      Collection<RaftPeer> peers, Collection<RaftPeerId> deadPeers) {
-    LOG.info("waitAndCheckNewConf: peers={}, deadPeers={}, {}", peers, deadPeers, cluster.printServers());
+      Collection<RaftPeer> peers, Collection<RaftPeerId> deadPeers,
+      Collection<RaftPeer> newListeners) {
+    final Collection<RaftPeer> listeners = newListeners != null ? newListeners : Collections.emptyList();
+    LOG.info("waitAndCheckNewConf: peers={}, deadPeers={}, newListeners={}, {}",
+             peers, deadPeers, listeners, cluster.printServers());
     Assertions.assertNotNull(cluster.getLeader());
 
     int numIncluded = 0;
     int deadIncluded = 0;
     final RaftConfigurationImpl current = RaftConfigurationImpl.newBuilder()
-        .setConf(peers).setLogEntryIndex(0).build();
+        .setConf(peers, listeners).setLogEntryIndex(0).build();
     for (RaftServer.Division d : cluster.iterateDivisions()) {
       final RaftServerImpl server = (RaftServerImpl)d;
       LOG.info("checking {}", server);
@@ -118,7 +137,7 @@ public final class RaftServerTestUtil {
       if (current.containsInConf(server.getId())) {
         numIncluded++;
         Assertions.assertTrue(conf.isStable());
-        Assertions.assertTrue(conf.hasNoChange(peers, Collections.emptyList()));
+        Assertions.assertTrue(conf.hasNoChange(peers, listeners));
       } else if (server.getInfo().isAlive()) {
         // The server is successfully removed from the conf
         // It may not be shutdown since it may not be able to talk to the new leader (who is not in its conf).
@@ -126,7 +145,7 @@ public final class RaftServerTestUtil {
         Assertions.assertFalse(conf.containsInConf(server.getId()));
       }
     }
-    Assertions.assertEquals(peers.size(), numIncluded + deadIncluded);
+    Assertions.assertEquals(peers.size() + listeners.size(), numIncluded + deadIncluded);
   }
 
   public static long getNextIndex(RaftServer.Division server) {
